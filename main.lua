@@ -1,416 +1,514 @@
---[[
-    ⚡ EXECUTOR UYUMLU PROFESYONEL ADMIN PANELİ
-    - Infinite Yield kalitesinde komut sistemi
-    - Modern Luau standartları (pcall, task.wait, vs.)
---]]
-
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  BAŞLANGIÇ KONTROLLERİ & AYARLAR
--- ═══════════════════════════════════════════════════════════════════════════════════════
+-- [[ NULLITY YIELD v2.0 - MASTER COMMANDER ]]--
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
 local Workspace = game:GetService("Workspace")
-local Lighting = game:GetService("Lighting")
-local VirtualUser = game:GetService("VirtualUser")
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-local Camera = Workspace.CurrentCamera
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Karakter yüklenene kadar bekle
-repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+-- Rayfield Kütüphanesini Yükleyelim
+local Rayfield = loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source', true))()
 
--- Ayarlar tablosu
-local Settings = {
-    Fly = false, Noclip = false, Bhop = false, Dash = false,
-    WalkSpeed = 16, JumpPower = 50, FlySpeed = 75,
-    CurrentTarget = nil,
-    Fullbright = false, Esp = false, OriginalFov = 70,
-    TeleportHistory = {},
-}
+local LP = Players.LocalPlayer
+local Character = LP.Character or nil
+local CharacterAddedConnection
+local CharacterRemovingConnection
+local IsNoclip = false
+local IsEsp = false
+local FlightVelocity = Vector3.new(0, 100, 0)
+local EspHighlights = {}
 
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  YARDIMCI FONKSİYONLAR
--- ═══════════════════════════════════════════════════════════════════════════════════════
+-- 2. YARDIMCI FONKSİYONLAR
 
-local function GetCharacter()
-    return LocalPlayer.Character
-end
-
-local function GetHumanoid()
-    local char = GetCharacter()
-    return char and char:FindFirstChildWhichIsA("Humanoid")
-end
-
-local function GetHumanoidRoot()
-    local char = GetCharacter()
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local function ShowNotification(Title, Text, Duration)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = Title,
-            Text = Text,
-            Duration = Duration or 3,
-        })
-    end)
-end
-
-local function GetPlayerFromString(input)
-    if not input or input == "" then return nil end
-    input = input:lower()
-    for _, player in pairs(Players:GetPlayers()) do
-        if player.Name:lower():sub(1, #input) == input or 
-           (player.DisplayName and player.DisplayName:lower():sub(1, #input) == input) then
-            return player
+-- Fonksiyon: Oyuncuyu Ara
+local function GetPlayer(name)
+    if not name or name == "" then return nil end
+    name = name:lower()
+    for _, ply in ipairs(Players:GetPlayers()) do
+        if ply.Name:lower():sub(1, #name) == name or ply.DisplayName:lower():sub(1, #name) == name then
+            return ply
         end
     end
     return nil
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  KOMUT ÇEKİRDEĞİ (COMMAND ENGINE)
--- ═══════════════════════════════════════════════════════════════════════════════════════
-
-local Commands = {}
-
--- Hız ayarlama
-Commands["speed"] = function(args)
-    local speedValue = tonumber(args[1])
-    if speedValue then
-        Settings.WalkSpeed = math.clamp(speedValue, 16, 500)
-        ShowNotification("⚡ Speed", "Hız: " .. Settings.WalkSpeed, 2)
-    else
-        Settings.WalkSpeed = 16
-        ShowNotification("⚡ Speed", "Normal hıza dönüldü.", 2)
-    end
-end
-
--- Zıplama ayarı
-Commands["jump"] = function(args)
-    local jumpValue = tonumber(args[1])
-    if jumpValue then
-        Settings.JumpPower = math.clamp(jumpValue, 50, 500)
-        ShowNotification("🦘 Jump", "Zıplama gücü: " .. Settings.JumpPower, 2)
-    else
-        Settings.JumpPower = 50
-        ShowNotification("🦘 Jump", "Normal zıplamaya dönüldü.", 2)
-    end
-end
-
--- Uçma (Fly)
-Commands["fly"] = function()
-    Settings.Fly = not Settings.Fly
-    if Settings.Fly then
-        local hrp = GetHumanoidRoot()
-        local hum = GetHumanoid()
-        if hrp and hum then
-            local bv = Instance.new("BodyVelocity")
-            bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-            bv.Velocity = Vector3.new(0, 0, 0)
-            bv.Parent = hrp
-            hum.PlatformStand = true
-            Settings.FlyBodyVelocity = bv
-            ShowNotification("🚀 Fly", "Aktif! (WASD ile uç)", 3)
+-- Fonksiyon: ESP'yi Güncellemek
+local function UpdateEsp()
+    for _, highlight in pairs(EspHighlights) do
+        if highlight and highlight.Parent then
+            highlight:Destroy()
         end
-    else
-        if Settings.FlyBodyVelocity then Settings.FlyBodyVelocity:Destroy() end
-        local hum = GetHumanoid()
-        if hum then hum.PlatformStand = false end
-        ShowNotification("🚀 Fly", "Kapatıldı.", 2)
     end
-end
+    EspHighlights = {}
 
--- Noclip (Duvar geçme)
-Commands["noclip"] = function()
-    Settings.Noclip = not Settings.Noclip
-    ShowNotification("👻 Noclip", Settings.Noclip and "Aktif!" or "Kapatıldı!", 2)
-end
-
--- B-Hop (Otomatik zıplama)
-Commands["bhop"] = function()
-    Settings.Bhop = not Settings.Bhop
-    ShowNotification("🔄 B-Hop", Settings.Bhop and "Aktif!" or "Kapatıldı!", 2)
-end
-
--- Dash (Hızlı hareket)
-Commands["dash"] = function()
-    Settings.Dash = not Settings.Dash
-    ShowNotification("💨 Dash", Settings.Dash and "Aktif! (CTRL ile dash)", 2)
-end
-
--- Işınlanma (Teleport)
-Commands["tp"] = function(args)
-    local target = GetPlayerFromString(args[1])
-    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-        local myRoot = GetHumanoidRoot()
-        if myRoot then
-            table.insert(Settings.TeleportHistory, myRoot.Position)
-            myRoot.CFrame = target.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 2)
-            ShowNotification("📍 Teleport", target.Name .. " yanına ışınlandı!", 2)
+    if IsEsp then
+        for _, ply in ipairs(Players:GetPlayers()) do
+            if ply ~= LP and ply.Character then
+                local highlight = Instance.new("Highlight", ply.Character)
+                highlight.FillColor = Color3.fromRGB(255, 0, 0)
+                EspHighlights[ply.Name] = highlight
+            end
         end
-    else
-        ShowNotification("⚠️ Teleport", "Oyuncu bulunamadı.", 2)
     end
 end
 
--- Yanına çağırma (Bring)
-Commands["bring"] = function(args)
-    local target = GetPlayerFromString(args[1])
-    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-        local myRoot = GetHumanoidRoot()
-        if myRoot then
-            target.Character.HumanoidRootPart.CFrame = myRoot.CFrame * CFrame.new(0, 0, 2)
-            ShowNotification("🌀 Bring", target.Name .. " yanına getirildi!", 2)
-        end
-    else
-        ShowNotification("⚠️ Bring", "Oyuncu bulunamadı.", 2)
-    end
-end
+-- Fonksiyon: Flight'i Etkinleştirme/Aksitleştirme
+local function ToggleFlight(enable)
+    if enable then
+        IsFlying = true
+        local function OnRenderStepped()
+            if Character and Character:FindFirstChild("HumanoidRootPart") then
+                local moveVector = Vector3.new()
+                local speed = 15
 
--- Öldürme (Kill)
-Commands["kill"] = function()
-    local humanoid = GetHumanoid()
-    if humanoid then humanoid.Health = 0 end
-    ShowNotification("⚡ Kill", "Kendini öldürdün!", 2)
-end
+                if IsFlying then
+                    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                        moveVector = moveVector + Character.HumanoidRootPart.CFrame.ForwardVector * speed
+                    end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                        moveVector = moveVector + (-Character.HumanoidRootPart.CFrame.ForwardVector) * speed
+                    end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                        moveVector = moveVector + (-Character.HumanoidRootPart.CFrame.RightVector) * speed
+                    end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                        moveVector = moveVector + Character.HumanoidRootPart.CFrame.RightVector * speed
+                    end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+                        moveVector = moveVector + Vector3.new(0, speed, 0)
+                    end
+                    if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+                        moveVector = moveVector + Vector3.new(0, -speed, 0)
+                    end
 
--- Yeniden doğma (Respawn)
-Commands["respawn"] = function()
-    LocalPlayer.Character:BreakJoints()
-    ShowNotification("🔄 Respawn", "Yeniden doğuluyor...", 2)
-end
-
--- Geri al (Undo Teleport)
-Commands["undo"] = function()
-    local myRoot = GetHumanoidRoot()
-    if myRoot and #Settings.TeleportHistory > 0 then
-        local lastPos = table.remove(Settings.TeleportHistory)
-        myRoot.CFrame = CFrame.new(lastPos)
-        ShowNotification("↩️ Undo", "Geri alındı!", 2)
-    else
-        ShowNotification("⚠️ Undo", "Geri alınacak pozisyon yok.", 2)
-    end
-end
-
--- ESP (Oyuncu işaretleme)
-Commands["esp"] = function()
-    Settings.Esp = not Settings.Esp
-    if not Settings.Esp then
-        for _, player in pairs(Players:GetPlayers()) do
-            if player.Character then
-                for _, obj in pairs(player.Character:GetChildren()) do
-                    if obj:IsA("Highlight") then obj:Destroy() end
+                    Character.HumanoidRootPart.Velocity = moveVector
+                else
+                    Character.HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
                 end
             end
         end
-    end
-    ShowNotification("👁️ ESP", Settings.Esp and "Aktif!" or "Kapatıldı!", 2)
-end
 
-Commands["fullbright"] = function()
-    Settings.Fullbright = not Settings.Fullbright
-    if Settings.Fullbright then
-        Lighting.Brightness = 2
-        Lighting.ClockTime = 14
-        Lighting.GlobalShadows = false
-        ShowNotification("☀️ Fullbright", "Aktif!", 2)
+        RunService.RenderStepped:Connect(OnRenderStepped)
     else
-        Lighting.Brightness = 1
-        Lighting.ClockTime = 8
-        Lighting.GlobalShadows = true
-        ShowNotification("🌙 Fullbright", "Kapatıldı.", 2)
+        IsFlying = false
     end
 end
 
-Commands["fov"] = function(args)
-    local fovValue = tonumber(args[1])
-    if fovValue then
-        Camera.FieldOfView = math.clamp(fovValue, 20, 120)
-        ShowNotification("👓 FOV", "FOV: " .. Camera.FieldOfView, 2)
-    else
-        Camera.FieldOfView = Settings.OriginalFov
-        ShowNotification("👓 FOV", "Normal FOV'a dönüldü.", 2)
+-- 3. KOMUT REGISTRY (Beyin Kısmı) -- [[ HIZ VE ZIPLAMA ]]
+Commands.speed = function(args)
+    local s = tonumber(args[1]) or 16
+    if Character and Character:FindFirstChild("Humanoid") then
+        Character.Humanoid.WalkSpeed = s
+        _G.LastWalkSpeed = s
     end
 end
 
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  RUNTIME LOOP (Ana döngü - RunService ile)
--- ═══════════════════════════════════════════════════════════════════════════════════════
+Commands.jump = function(args)
+    local j = tonumber(args[1]) or 50
+    if Character and Character:FindFirstChild("Humanoid") then
+        Character.Humanoid.JumpPower = j
+        _G.LastJumpPower = j
+    end
+end
 
-RunService.RenderStepped:Connect(function()
-    pcall(function()
-        local char = GetCharacter()
-        local hum = GetHumanoid()
-        local hrp = GetHumanoidRoot()
-
-        if not char or not hum or not hrp then return end
-
-        -- Hız ve zıplama ayarlarını zorla
-        if hum.WalkSpeed ~= Settings.WalkSpeed then hum.WalkSpeed = Settings.WalkSpeed end
-        if hum.JumpPower ~= Settings.JumpPower then hum.JumpPower = Settings.JumpPower end
-
-        -- Fly mekaniği
-        if Settings.Fly and Settings.FlyBodyVelocity then
-            local moveDir = Vector3.new(0, 0, 0)
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + Camera.CFrame.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - Camera.CFrame.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - Camera.CFrame.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + Camera.CFrame.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then moveDir = moveDir - Vector3.new(0, 1, 0) end
-
-            moveDir = moveDir.Unit * Settings.FlySpeed
-            Settings.FlyBodyVelocity.Velocity = moveDir
+-- [[ TELEPORT ]]
+Commands.tp = function(args)
+    local target = GetPlayer(args[1] or "")
+    if target and target.Character then
+        if Character and Character:FindFirstChild("HumanoidRootPart") then
+            Character.HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame
+            Rayfield:Notify({Title = "Teleport", Content = "Oyuncuya başarıyla ışındınız."})
         end
+    else
+        Rayfield:Notify({Title = "Hata", Content = "Hedef oyuncu bulunamadı!"})
+    end
+end
 
-        -- Noclip mekaniği
-        if Settings.Noclip then
-            for _, part in pairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = false end
+-- [[ ESP - OYUNCULARI GÖRME ]]
+Commands.esp = function()
+    IsEsp = not IsEsp
+    UpdateEsp()
+    Rayfield:Notify({Title = "ESP Durumu", Content = IsEsp and "ESP Açık" or "ESP Kapalı"})
+end
+
+-- [[ KILL - ÖLDÜRME (Kılıç/Tool Gerektirir) ]]
+Commands.kill = function(args)
+    local target = GetPlayer(args[1] or "")
+    local tool = Character:FindFirstChildOfClass("Tool")
+    if target and target.Character and tool and tool:FindFirstChild("Handle") then
+        local targetPart = target.Character:FindFirstChild("HumanoidRootPart")
+        if targetPart then
+            firetouchinterest(targetPart, tool.Handle, 0)
+            firetouchinterest(targetPart, tool.Handle, 1)
+            Rayfield:Notify({Title = "Hedef Elendi", Content = target.Name .. " başarıyla paketlendi."})
+        else
+            Rayfield:Notify({Title = "Hata", Content = "Hedef karakterin HumanoidRootPart bulunamadı!"})
+        end
+    else
+        Rayfield:Notify({Title = "Hata", Content = "Elinizde bir kılıç/eşya bulunmalı veya hedef oyuncu yanlış yazıldı!"})
+    end
+end
+
+-- [[ INVISIBLE - GÖRÜNMEZLİK ]]
+Commands.invisible = function()
+    if Character then
+        for _, part in pairs(Character:GetDescendants()) do
+            if part:IsA("BasePart") or part:IsA("Decal") then
+                if part.CanCollide then
+                    part.Transparency = part.Transparency == 0 and 0.5 or 0
+                else
+                    part.Transparency = part.Transparency == 0 and 0.9 or 0
+                end
             end
         end
+        _G.InvisibleTransparency = Character.HumanoidRootPart.Transparency == 0.5 and 0.5 or 0
+        Rayfield:Notify({Title = "Görünmezlik", Content = Character.HumanoidRootPart.Transparency == 0.5 and "Görünmez" or "Görünür"})
+    else
+        Rayfield:Notify({Title = "Hata", Content = "Karakter yüklenmemiş!"})
+    end
+end
 
-        -- ESP mekaniği
-        if Settings.Esp then
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character then
-                    local highlight = player.Character:FindFirstChild("DeltaESP")
-                    if not highlight then
-                        highlight = Instance.new("Highlight")
-                        highlight.Name = "DeltaESP"
-                        highlight.FillColor = Color3.fromRGB(255, 0, 0)
-                        highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
-                        highlight.Adornee = player.Character
-                        highlight.Parent = player.Character
-                        highlight.FillTransparency = 0.5
+-- [[ NOCLIP ]] --
+Commands.noclip = function()
+    IsNoclip = true
+    Rayfield:Notify({Title = "Noclip", Content = "Noclip Açık"})
+end
+
+Commands.clip = function()
+    IsNoclip = false
+    Rayfield:Notify({Title = "Noclip", Content = "Noclip Kapalı"})
+    if Character then
+        Character.PrimaryPart.CanCollide = true
+    end
+end
+
+-- [[ FLY / UNFLY ]]
+Commands.fly = function()
+    ToggleFlight(true)
+    Rayfield:Notify({Title = "Uçma", Content = "Uçma Açık"})
+end
+
+Commands.unfly = function()
+    ToggleFlight(false)
+    Rayfield:Notify({Title = "Uçma", Content = "Uçma Kapalı"})
+end
+
+-- [[ TP TO TOUCH ]] --
+Commands.tptoTouch = function()
+    if _G.TpToTouch then
+        _G.TpToTouch:Stop()
+        _G.TpToTouch = false
+    else
+        _G.TpToTouch = true
+        local function onTouchStarted(input, processed)
+            if processed then return end
+            if input.UserInputType == Enum.UserInputType.Touch then
+                if Character and Character:FindFirstChild("HumanoidRootPart") then
+                    local hit = Workspace:FindPartOnRay(Ray.new(Character.Head.Position, (input.Position - Character.Head.Position).Unit * 300))
+                    if hit then
+                        Character.HumanoidRootPart.CFrame = hit.CFrame + Vector3.new(0, 5, 0)
                     end
                 end
             end
         end
-    end)
-end)
 
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  B-HOP & DASH EVENTLERİ
--- ═══════════════════════════════════════════════════════════════════════════════════════
+        UserInputService.TouchBegan:Connect(onTouchStarted)
+    end
+    Rayfield:Notify({Title = "TP to Touch", Content = _G.TpToTouch and "İşlem Başlatıldı" or "İşlem Durduruldu"})
+end
 
-UserInputService.JumpRequest:Connect(function()
-    pcall(function()
-        if Settings.Bhop then
-            local hum = GetHumanoid()
-            if hum and hum:GetState() ~= Enum.HumanoidStateType.Jumping then
-                hum:ChangeState(Enum.HumanoidStateType.Jumping)
-            end
-        end
-    end)
-end)
+-- 4. KARAKTER YENILEME VE STABİLİTE
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    pcall(function()
-        if Settings.Dash and input.KeyCode == Enum.KeyCode.LeftControl then
-            local hrp = GetHumanoidRoot()
-            local cameraCF = Camera.CFrame
-            if hrp then
-                hrp.CFrame = hrp.CFrame + (cameraCF.LookVector * 100)
-                ShowNotification("💨 Dash", "Hızlı hareket!", 1)
-            end
-        end
-    end)
-end)
+-- Fonksiyon: Karakter Yenilenme Yönetimi
+local function OnCharacterAdded(newCharacter)
+    Character = newCharacter
+    local primaryPart = Character:FindFirstChild("PrimaryPart")
+    local humanoid = Character:FindFirstChild("Humanoid")
 
--- ═══════════════════════════════════════════════════════════════════════════════════════
---  ARAYÜZ (Rayfield UI Kütüphanesi)
--- ═══════════════════════════════════════════════════════════════════════════════════════
+    if IsNoclip and primaryPart then
+        primaryPart.CanCollide = false
+    elseif primaryPart then
+        primaryPart.CanCollide = true
+    end
 
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-local Window = Rayfield:CreateWindow({
-    Name = "⚡ EXECUTOR ADMIN PANEL",
-    Icon = 0,
-    LoadingTitle = "⚡ Yükleniyor...",
-    LoadingSubtitle = "Executor Optimized",
-    ConfigurationSaving = {Enabled = true, FileName = "Executor_Admin_Panel"},
-    KeySystem = false
-})
+    if humanoid then
+        humanoid.WalkSpeed = tonumber(_G.LastWalkSpeed) or 16
+        humanoid.JumpPower = tonumber(_G.LastJumpPower) or 50
+    end
 
--- Ana Sekme
-local MainTab = Window:CreateTab("🏠 Ana Menü", nil)
-
-MainTab:CreateSection("👤 Yerel Ayarlar")
-MainTab:CreateSlider({
-    Name = "Walk Speed",
-    Range = {16, 250},
-    Increment = 1,
-    Suffix = "Speed",
-    CurrentValue = 16,
-    Flag = "SpeedSlider",
-    Callback = function(value) Commands["speed"]({tostring(value)}) end
-})
-MainTab:CreateSlider({
-    Name = "Jump Power",
-    Range = {50, 250},
-    Increment = 5,
-    Suffix = "Power",
-    CurrentValue = 50,
-    Flag = "JumpSlider",
-    Callback = function(value) Commands["jump"]({tostring(value)}) end
-})
-MainTab:CreateToggle({Name = "Fly (Uçma)", CurrentValue = false, Flag = "FlyToggle", Callback = function() Commands["fly"]() end})
-MainTab:CreateToggle({Name = "Noclip (Duvar Geçme)", CurrentValue = false, Flag = "NoclipToggle", Callback = function() Commands["noclip"]() end})
-MainTab:CreateToggle({Name = "B-Hop (Otomatik Zıplama)", CurrentValue = false, Flag = "BhopToggle", Callback = function() Commands["bhop"]() end})
-MainTab:CreateToggle({Name = "Dash (CTRL ile Hızlı Hareket)", CurrentValue = false, Flag = "DashToggle", Callback = function() Commands["dash"]() end})
-
-MainTab:CreateSection("👥 Hedef Yönetimi")
-local TargetInput = MainTab:CreateInput({
-    Name = "Hedef Oyuncu Adı",
-    PlaceholderText = "Oyuncu adını yaz...",
-    RemoveTextAfterFocusLost = false,
-    Flag = "TargetInput",
-    Callback = function(text)
-        Settings.CurrentTarget = GetPlayerFromString(text)
-        if Settings.CurrentTarget then
-            ShowNotification("🎯 Hedef", Settings.CurrentTarget.Name .. " seçildi!", 2)
+    for _, part in pairs(Character:GetDescendants()) do
+        if part:IsA("BasePart") or part:IsA("Decal") then
+            part.Transparency = part.Transparency == 0 and (_G.InvisibleTransparency or 0) or 0
         end
     end
-})
-MainTab:CreateButton({Name = "Teleport (Oyuncuya Işınlan)", Callback = function() if Settings.CurrentTarget then Commands["tp"]({Settings.CurrentTarget.Name}) else ShowNotification("⚠️ Hata", "Önce bir oyuncu seçin!", 2) end end})
-MainTab:CreateButton({Name = "Bring (Yanına Getir)", Callback = function() if Settings.CurrentTarget then Commands["bring"]({Settings.CurrentTarget.Name}) else ShowNotification("⚠️ Hata", "Önce bir oyuncu seçin!", 2) end end})
-MainTab:CreateButton({Name = "Kill (Kendini Öldür)", Callback = function() Commands["kill"]() end})
-MainTab:CreateButton({Name = "Respawn (Yeniden Doğ)", Callback = function() Commands["respawn"]() end})
 
--- Görseller Sekmesi
-local VisualTab = Window:CreateTab("👁️ Görseller", nil)
-VisualTab:CreateToggle({Name = "ESP (Oyuncuları İşaretle)", CurrentValue = false, Flag = "ESPToggle", Callback = function() Commands["esp"]() end})
-VisualTab:CreateButton({Name = "Fullbright (Gündüz Yap)", Callback = function() Commands["fullbright"]() end})
-VisualTab:CreateSlider({
-    Name = "Field of View (FOV)",
-    Range = {20, 120},
-    Increment = 1,
-    Suffix = "°",
-    CurrentValue = 70,
-    Flag = "FovSlider",
-    Callback = function(value) Commands["fov"]({tostring(value)}) end
-})
+    UpdateEsp()
+end
 
--- Sohbet Komutları (CMD) için dinleyici
-local function OnChat(msg, author)
-    if author ~= LocalPlayer then return end
-    if msg:sub(1, 1) == ";" then
-        local parts = {}
-        for part in string.gmatch(msg:sub(2), "[^ ]+") do table.insert(parts, part) end
-        local cmdName = parts[1] and parts[1]:lower()
-        table.remove(parts, 1)
-        if Commands[cmdName] then
-            Commands[cmdName](parts)
-            ShowNotification("⚡ CMD", "Komut çalıştırıldı: " .. cmdName, 2)
+-- Fonksiyon: Karakter Kaybolma Yönetimi
+local function OnCharacterRemoving()
+    if Character then
+        if IsNoclip then
+            local primaryPart = Character:FindFirstChild("PrimaryPart")
+            if primaryPart then
+                primaryPart.CanCollide = true
+            end
         end
+        Character = nil
     end
 end
 
-LocalPlayer.Chatted:Connect(OnChat)
+-- Karakter başlamışsa bağlantıları tazele
+if Character then
+    OnCharacterAdded(Character)
+end
 
--- Başlangıç Bildirimi
-ShowNotification("✅ Executor Admin Panel", "Başarıyla yüklendi! Chat'e ;help yazarak komutları görebilirsin.", 5)
+CharacterAddedConnection = LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
+CharacterRemovingConnection = LocalPlayer.CharacterRemoving:Connect(OnCharacterRemoving)
+
+-- Heartbeat ile Noclip Durumunu Kontrol Et
+RunService.RenderStepped:Connect(function()
+    if IsNoclip and Character and Character.PrimaryPart then
+        Character.PrimaryPart.CanCollide = false
+    end
+end)
+
+-- 5. ARAYÜZ (UI)
+
+-- Pencere Oluşturalım
+local Window = Rayfield:CreateWindow({
+    Name = "Nullity Yield | Pro Admin",
+    LoadingTitle = "Sistemler Hazırlanıyor...",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = nil,
+        FileName = "NullityYieldConfig"
+    }
+})
+
+-- Komutlar Tab'ını Oluşturalım
+local Tab = Window:CreateTab("Komutlar", 4483362458)
+
+-- Command Bar Textbox'u Oluşturalım
+Tab:CreateTextBox({
+    Name = "Command Bar (Örn: tp player)",
+    PlaceholderText = "Komutlarınızı buraya yazın...",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(text)
+        ExecuteCommand(text)
+    end,
+})
+
+-- Fonksiyon: Komut Çalıştırma
+local function ExecuteCommand(input)
+    local args = {}
+    for word in input:gmatch("%S+") do
+        table.insert(args, word)
+    end
+
+    local commandName = table.remove(args, 1)
+
+    local commandFunction = Commands[commandName]
+
+    if commandFunction then
+        local success, err = pcall(commandFunction, args)
+        if success then
+            print("[Success] Komut başarıyla çalıştırıldı.")
+        else
+            warn("[Error] Komut çalıştırılırken hata oluştu: " .. tostring(err))
+        end
+    else
+        warn("[Info] Belirtilen komut bulunamadı.")
+    end
+end
+
+-- Ekstra Komutlar
+-- [[ GODMODE ]] --
+Commands.godmode = function()
+    _G.GodModeEnabled = true
+    local function OnTakeDamage(damage, attacker, callback)
+        if _G.GodModeEnabled then
+            callback(0)
+        end
+    end
+
+    if Character and Character:FindFirstChild("Humanoid") then
+        Character.Humanoid:Died:Connect(function()
+            if _G.GodModeEnabled then
+                Character.Humanoid:UnequipTools()
+                Character.Humanoid.Health = Character.Humanoid.MaxHealth
+            end
+        end)
+
+        Character.Humanoid:Died:Connect(function()
+            for _, bodyPart in ipairs(Character:GetDescendants()) do
+                if bodyPart:IsA("BasePart") or bodyPart:IsA("Decal") then
+                    bodyPart.BreakJointsOnDeath = false
+                    bodyPart.Anchored = false
+                end
+            end
+        end)
+
+        Character.Humanoid.TakeDamage = OnTakeDamage
+    end
+    Rayfield:Notify({Title = "God Mode", Content = "God Mode Açık"})
+end
+
+Commands.ungodmode = function()
+    _G.GodModeEnabled = false
+    if Character and Character:FindFirstChild("Humanoid") then
+        Character.Humanoid.TakeDamage = nil
+    end
+    Rayfield:Notify({Title = "God Mode", Content = "God Mode Kapalı"})
+end
+
+-- [[ TP TO TARGET ]] --
+Commands.tptarget = function(args)
+    local target = GetPlayer(args[1] or "")
+    if target and target.Character then
+        if Character and Character:FindFirstChild("HumanoidRootPart") then
+            Character.HumanoidRootPart.CFrame = target.Character.HumanoidRootPart.CFrame
+            Rayfield:Notify({Title = "Teleport", Content = "Oyuncuya başarıyla ışındınız."})
+        end
+    else
+        Rayfield:Notify({Title = "Hata", Content = "Hedef oyuncu bulunamadı!"})
+    end
+end
+
+-- [[ FLY WITH TOUCH ]] --
+Commands.touchfly = function()
+    if _G.TouchFly then
+        _G.TouchFly:Stop()
+        _G.TouchFly = false
+    else
+        _G.TouchFly = true
+        local flying = false
+        local moveVector = Vector3.new()
+        local speed = 15
+
+        local function onTouchStarted(input, processed)
+            if processed then return end
+            if input.UserInputType == Enum.UserInputType.Touch then
+                flightPoint = input.Position
+                flying = true
+            end
+        end
+
+        local function onTouchMoved(input, processed)
+            if processed then return end
+            if input.UserInputType == Enum.UserInputType.Touch and flying then
+                local delta = (input.Position - flightPoint)
+                moveVector = Vector3.new(delta.X, delta.Y, 0) * speed
+            end
+        end
+
+        local function onTouchEnded(input, processed)
+            if input.UserInputType == Enum.UserInputType.Touch then
+                flying = false
+                moveVector = Vector3.new(0, 0, 0)
+            end
+        end
+
+        local function onRenderStepped()
+            if flying and Character and Character:FindFirstChild("HumanoidRootPart") then
+                Character.HumanoidRootPart.Velocity = moveVector
+            else
+                moveVector = Vector3.new(0, 0, 0)
+            end
+        end
+
+        UserInputService.TouchBegan:Connect(onTouchStarted)
+        UserInputService.TouchMoved:Connect(onTouchMoved)
+        UserInputService.TouchEnded:Connect(onTouchEnded)
+        RunService.RenderStepped:Connect(onRenderStepped)
+    end
+    Rayfield:Notify({Title = "Touch Fly", Content = _G.TouchFly and "İşlem Başlatıldı" or "İşlem Durduruldu"})
+end
+
+Commands.untouchfly = function()
+    _G.TouchFly = false
+    Rayfield:Notify({Title = "Touch Fly", Content = "İşlem Durduruldu"})
+end
+
+-- [[ FLING ]] --
+Commands.fling = function(args)
+    local target = GetPlayer(args[1] or "")
+    if target and target.Character then
+        local targetTorso = target.Character:FindFirstChild("UpperTorso")
+        local targetHumanoidRootPart = target.Character:FindFirstChild("HumanoidRootPart")
+        local localTorso = Character:FindFirstChild("UpperTorso")
+        local localHumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+
+        if targetTorso and targetHumanoidRootPart and localTorso and localHumanoidRootPart then
+            local HumanoidRootPart = localHumanoidRootPart
+            local TargetHumanoidRootPart = targetHumanoidRootPart
+            local Attachment0 = Instance.new("Attachment", HumanoidRootPart)
+            local Attachment1 = Instance.new("Attachment", TargetHumanoidRootPart)
+            local RopeConstraint = Instance.new("RopeConstraint", HumanoidRootPart)
+
+            Attachment0.Visible = false
+            Attachment1.Visible = false
+
+            Attachment0.Name = "Attachment"
+            Attachment1.Name = "Attach"
+
+            RopeConstraint.Visible = false
+            RopeConstraint.ConstraintActType = Enum.ActuatorType.On
+            RopeConstraint.Attachment0 = Attachment0
+            RopeConstraint.Attachment1 = Attachment1
+            RopeConstraint.Restitution = 0
+            RopeConstraint.Damping = 0
+            RopeConstraint.Length = 20
+            RopeConstraint.Thickness = .5
+            RopeConstraint.Thickness0 = .5
+            RopeConstraint.Thickness1 = .5
+
+            wait(0.2)
+            HumanoidRootPart.Velocity = Vector3.new(250, 150, 250)
+            wait(1)
+            RopeConstraint:Destroy()
+            Attachment0:Destroy()
+            Attachment1:Destroy()
+
+            Rayfield:Notify({Title = "Fling", Content = "Oyuncu başarıyla fling atıldı."})
+        else
+            Rayfield:Notify({Title = "Hata", Content = "Hedef karakter parçaları bulunamadı!"})
+        end
+    else
+        Rayfield:Notify({Title = "Hata", Content = "Hedef oyuncu bulunamadı!"})
+    end
+end
+
+-- [[ TÜKET İLE UÇMA ]] --
+Commands.jetpack = function()
+    if _G.Jetpack then
+        _G.Jetpack:Stop()
+        _G.Jetpack = false
+    else
+        _G.Jetpack = true
+        local function onJumpRequest()
+            if _G.Jetpack and Character and Character:FindFirstChild("HumanoidRootPart") then
+                Character.HumanoidRootPart.Velocity = Vector3.new(0, 100, 0)
+            end
+        end
+
+        UserInputService.JumpRequest:Connect(onJumpRequest)
+    end
+    Rayfield:Notify({Title = "Jetpack", Content = _G.Jetpack and "İşlem Başlatıldı" or "İşlem Durduruldu"})
+end
+
+Commands.unjetpack = function()
+    _G.Jetpack = false
+    Rayfield:Notify({Title = "Jetpack", Content = "İşlem Durduruldu"})
+end
+
+-- Rayfield UI Oluşturduk
+local CommandBar = Tab:CreateInput({
+    Name = "Command Bar (Örn: tp player)",
+    PlaceholderText = "Komutlarınızı buraya yazın...",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(text)
+        ExecuteCommand(text)
+    end,
+})
